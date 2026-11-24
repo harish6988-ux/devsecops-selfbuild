@@ -30,7 +30,8 @@ resource "aws_ecs_task_definition" "app" {
     image                  = var.image_ref
     essential              = true
     user                   = "10001:10001"
-    readonlyRootFilesystem = true
+    #readonlyRootFilesystem = true
+    readonlyRootFilesystem = false
     command                = ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--worker-tmp-dir", "/tmp", "app.main:app"]
     environment            = [{ name = "APP_VERSION", value = var.app_version }, { name = "HOME", value = "/tmp" }]
     portMappings           = [{ containerPort = 8080, protocol = "tcp" }]
