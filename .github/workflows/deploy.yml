@@ -86,7 +86,11 @@ jobs:
       - name: Sign and verify the exact image identity
         if: inputs.operation != 'destroy'
         run: |
-          cosign sign --yes "$IMAGE_REF"
+          identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/deploy.yml@refs/heads/main"
+          issuer=https://token.actions.githubusercontent.com
+          if ! cosign verify "$IMAGE_REF" --certificate-identity="$identity" --certificate-oidc-issuer="$issuer"; then
+            cosign sign --yes "$IMAGE_REF"
+          fi
           cosign verify "$IMAGE_REF"             --certificate-identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/deploy.yml@refs/heads/main"             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:

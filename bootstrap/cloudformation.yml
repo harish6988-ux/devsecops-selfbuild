@@ -561,6 +561,23 @@
                   "Effect": "Allow",
                   "Action": "logs:DescribeLogGroups",
                   "Resource": "*"
+                },
+                {
+                  "Sid": "CreateResourcesInsideProjectVpc",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:CreateSubnet",
+                    "ec2:CreateRouteTable",
+                    "ec2:CreateSecurityGroup"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*"
+                  },
+                  "Condition": {
+                    "StringEquals": {
+                      "ec2:ResourceTag/Project": "devsecops-selfbuild"
+                    }
+                  }
                 }
               ]
             }
