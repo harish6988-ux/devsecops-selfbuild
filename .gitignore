@@ -1,0 +1,13 @@
+.tools/
+.venv/
+__pycache__/
+*.pyc
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+backend.hcl
+.env
+reports/
+*.tar

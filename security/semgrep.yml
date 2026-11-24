@@ -1,0 +1,16 @@
+rules:
+  - id: lab-python-no-eval
+    languages: [python]
+    severity: ERROR
+    message: Avoid evaluating Python code from strings.
+    pattern: eval(...)
+  - id: lab-python-no-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Avoid shell=True; pass an argument list to subprocess instead.
+    pattern: subprocess.$METHOD(..., shell=True, ...)
+  - id: lab-flask-no-debug
+    languages: [python]
+    severity: ERROR
+    message: Do not enable the Flask debugger.
+    pattern: $APP.run(..., debug=True, ...)

@@ -1,0 +1,14 @@
+.git
+.github
+.tools
+.venv
+__pycache__
+terraform
+bootstrap
+docs
+reports
+scripts
+security
+*.tfstate*
+*.tfvars
+.env

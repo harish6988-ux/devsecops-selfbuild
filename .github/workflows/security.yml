@@ -1,0 +1,125 @@
+name: Security checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Secrets, dependencies and SAST
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history for secrets
+        run: |
+          docker run --rm -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory             -e GIT_CONFIG_VALUE_0=/repo -v "$PWD:/repo:ro"             ghcr.io/gitleaks/gitleaks:v8.24.2 git /repo --redact --no-banner --log-opts=--all
+      - name: Scan dependency manifest
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" aquasec/trivy:0.76.2             fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /repo/requirements.txt
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: pip install semgrep==1.186.0
+      - name: Scan application source
+        run: semgrep scan --config security/semgrep.yml --error --metrics=off app/
+
+  infrastructure:
+    name: Terraform and IaC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: pip install checkov==3.4.6
+      - name: Enforce the documented teaching baseline
+        run: >-
+          checkov -d terraform --framework terraform --quiet
+          --check CKV_AWS_23,CKV_AWS_24,CKV_AWS_25,CKV_AWS_249,CKV_AWS_332,CKV_AWS_334,CKV_AWS_335,CKV_AWS_336
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: '1.14.0'
+      - run: terraform -chdir=terraform fmt -check
+      - run: terraform -chdir=terraform init -backend=false -input=false
+      - run: terraform -chdir=terraform validate
+
+  container:
+    name: Image, SBOM and application health
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build once
+        run: docker build --pull -t devsecops-selfbuild:ci .
+      - name: Verify non-root application startup
+        run: |
+          docker run -d --name app -p 127.0.0.1:8080:8080 devsecops-selfbuild:ci
+          trap 'docker logs app; docker rm -f app' EXIT
+          test "$(docker inspect --format '{{.Config.User}}' app)" = '10001:10001'
+          curl --fail --retry 15 --retry-all-errors --retry-delay 2 --max-time 5 --retry-max-time 60 http://127.0.0.1:8080/health
+      - name: Scan exact image and generate SBOM
+        run: |
+          mkdir -p reports
+          set +e
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports:/reports"             aquasec/trivy:0.76.2 image --scanners vuln --severity HIGH,CRITICAL             --exit-code 1 --format json --output /reports/image.json devsecops-selfbuild:ci
+          result=$?
+          set -e
+          python scripts/summarize_image_scan.py reports/image.json
+          test "$result" = 0
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports:/reports"             aquasec/trivy:0.76.2 image --format cyclonedx --output /reports/sbom.cdx.json devsecops-selfbuild:ci
+          docker save -o reports/image.tar devsecops-selfbuild:ci
+          sha256sum reports/image.tar > reports/image.tar.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tested-image-${{ github.sha }}
+          path: reports/
+          retention-days: 3
+
+  dast:
+    name: ZAP passive application checks
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: tested-image-${{ github.sha }}
+          path: reports/
+      - name: Test the same image in an isolated network
+        run: |
+          sha256sum -c reports/image.tar.sha256
+          docker load -i reports/image.tar
+          docker network create selfbuild-test
+          docker run -d --name app --network selfbuild-test devsecops-selfbuild:ci
+          trap 'docker logs app; docker rm -f app; docker network rm selfbuild-test' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec app python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"; then break; fi
+            sleep 2
+          done
+          mkdir -p reports/zap
+          cp security/zap.conf reports/zap/
+          chmod 777 reports/zap
+          docker run --rm --network selfbuild-test -v "$PWD/reports/zap:/zap/wrk:rw"             ghcr.io/zaproxy/zaproxy:2.17.0             zap-baseline.py -t http://app:8080 -m 1 -c zap.conf -r zap.html -J zap.json -I
+      - name: Preserve DAST reports even when a policy fails
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dast-${{ github.sha }}
+          path: reports/zap/
+          retention-days: 3
